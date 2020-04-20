@@ -15,6 +15,7 @@ from sklearn.neural_network import MLPClassifier
 
 import networkml
 
+
 class HostFootprint():
     """
     Perform machine learning operations on a host's network traffic
@@ -26,11 +27,9 @@ class HostFootprint():
     the origin or source.
     """
 
-
     def __init__(self, raw_args=None):
         self.logger = logging.getLogger(__name__)
         self.raw_args = raw_args
-
 
     @staticmethod
     def serialize_label_encoder(le, path):
@@ -50,7 +49,6 @@ class HostFootprint():
         with open(path, 'w') as model_json:
             json.dump(serialized_le, model_json)
 
-
     @staticmethod
     def deserialize_label_encoder(path):
         """Deserialize JSON object storing label encoder.
@@ -68,7 +66,6 @@ class HostFootprint():
         le.classes_ = np.array(model_dict['classes'])
         return le
 
-
     @staticmethod
     def parse_args(raw_args=None):
         """
@@ -83,7 +80,7 @@ class HostFootprint():
                             help='specify number of folds for k-fold cross validation')
         parser.add_argument('--label_encoder', '-l',
                             default=os.path.join(netml_path[0],
-                                'trained_models/host_footprint_le.json'),
+                                                 'trained_models/host_footprint_le.json'),
                             help='specify a path to load or save label encoder')
         parser.add_argument('--operation', '-O', choices=['train', 'predict'],
                             default='predict',
@@ -91,7 +88,7 @@ class HostFootprint():
                             train or predict (default=predict)')
         parser.add_argument('--trained_model', '-t',
                             default=os.path.join(netml_path[0],
-                                'trained_models/host_footprint.json'),
+                                                 'trained_models/host_footprint.json'),
                             help='specify a path to load or save trained model')
         parser.add_argument('--verbose', '-v',
                             choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
@@ -99,7 +96,6 @@ class HostFootprint():
                             help='logging level (default=INFO)')
         parsed_args = parser.parse_args(raw_args)
         return parsed_args
-
 
     def train(self):
         """
@@ -118,7 +114,7 @@ class HostFootprint():
 
         # Split dataframe into X (the input features or predictors)
         # and y (the target or outcome or dependent variable)
-        X = df.drop("filename", axis=1)
+        X = df.drop('filename', axis=1)
         y = df.filename
 
         # Extract only role name from strings in y feature
@@ -126,13 +122,11 @@ class HostFootprint():
         # but should be only the role name
 
         # Split full filename on "-" and create a list
-        y = y.str.split("-")
-        y = y.str[0] # Extract first element of list, the role name
+        y = y.str.split('-')
+        y = y.str[0]  # Extract first element of list, the role name
 
         # Replace string features with dummy (0/1) features
         # This is "one hot encoding"
-        # NOTE: Should this check exist? It could lead to the model
-        # functioning even when the input data is garbage
         X = self.string_feature_check(X)
 
         # Normalize X features before training
@@ -147,18 +141,15 @@ class HostFootprint():
         # Save label encoder
         HostFootprint.serialize_label_encoder(le, self.le_path)
 
-        # Calculate number of categories to predict
-        num_categories = len(le.classes_)
-
         # Instantiate neural network model
         # MLP = multi-layer perceptron
         model = MLPClassifier()
 
         # Perform grid-search with hyperparameter optimization
         # to find the best model
-        parameters = {'hidden_layer_sizes':[(64,32), (32,16),
-                                            (64, 32, 32),
-                                            (64, 32, 32, 16)]}
+        parameters = {'hidden_layer_sizes': [(64, 32), (32, 16),
+                                             (64, 32, 32),
+                                             (64, 32, 32, 16)]}
         clf = GridSearchCV(model, parameters,
                            cv=self.kfolds, n_jobs=-1,
                            scoring='f1_weighted')
@@ -171,7 +162,6 @@ class HostFootprint():
         # Save model to JSON
         skljson.to_json(self.model, self.model_path)
 
-
     def predict(self):
         """
         This function takes a csv of features at the host footprint level and
@@ -179,7 +169,7 @@ class HostFootprint():
         roles.
 
         OUTPUTS:
-        --all_prediction: top three roles for each host and the associated
+        --all_prediction: top n roles for each host and the associated
         probability of each role -- a dictionary
         """
 
@@ -190,13 +180,13 @@ class HostFootprint():
         # and y (the target or outcome or dependent variable)
         # This drop function should work even if there is no column
         # named filename
-        X = df.drop("filename", axis=1)
+        X = df.drop('filename', axis=1)
 
         # Get filenames to match to predictions
-        y = df.filename
+        filename = df.filename
 
         # Normalize X features before predicting
-        scaler = preprocessing.MinMaxScaler()
+        scaler = preprocessing.StandardScaler()
         scaler_fitted = scaler.fit(X)
         X = scaler_fitted.transform(X)
 
@@ -207,7 +197,7 @@ class HostFootprint():
         self.model = skljson.from_json(self.model_path)
 
         # Convert coeficients to numpy arrays to enable JSON deserialization
-        # This is a hack to compensate for a potential bug in sklearn_json
+        # This is a hack to compensate for a bug in sklearn_json
         for i, x in enumerate(self.model.coefs_):
             self.model.coefs_[i] = np.array(x)
 
@@ -216,16 +206,54 @@ class HostFootprint():
         # Make model predicton - Will return a vector of values
         predictions_rows = self.model.predict_proba(X)
 
-        # Output JSON of top three roles and probabilities for each file
+        # Dict to store JSON of top n roles and probabilities per device
+        all_predictions = self.get_individual_predictions(
+            predictions_rows, le, filename)
+
+        return all_predictions
+
+    @staticmethod
+    def get_individual_predictions(predictions_rows, label_encoder, filename):
+        """ Return role predictions for given device
+
+        INPUTS:
+        predictions_rows: each device is represented as a row
+        label_encoder: a mapping of device role name to numerical category
+        filename: the filename of the pcap for which a prediction is made
+
+        OUTPUTS:
+        all_predictions: top n roles for each host and the associated
+        probability of each role -- a dictionary
+        """
+
+        # Dict to store JSON of top n roles and probabilities per device
         all_predictions = {}
+
+        # Loop thru different devices on which to make prediction
         for counter, predictions in enumerate(predictions_rows):
 
-            # These operations do NOT create a sorted list
-            # Note from the past: To change the number of roles for which you
-            # want a prediction, change the number in the argpartition code
-            ind = np.argpartition(predictions, 3)[-3:] # Index of top 3 roles
-            labels = le.inverse_transform(ind) # top three role names
-            probs = predictions[ind] # probability of top three roles
+            # total number of functional roles
+            num_roles = len(predictions)
+
+            # programmer's note: the code block below ensures that the top
+            # three roles and their probabilities are returned when there
+            # are three or more roles present in the model. The code
+            # returns two roles if only two roles are present
+
+            # top_n_roles: desired number of roles for results
+            # note: the numbers below are not intuitive but are consistent
+            # with the logic of argpartition
+            top_n_roles = min(2, num_roles-1)
+            # Get indices of top n roles
+            # note: argpartion does not sort top roles - must be done later
+            ind = np.argpartition(predictions,
+                                  top_n_roles)[-(top_n_roles+1):]
+
+            # top three role names
+            labels = label_encoder.inverse_transform(ind)
+
+            # probability of top three roles
+            probs = predictions[ind]
 
             # Put labels and probabilities into list
             role_list = [(k, v) for k, v in zip(labels, probs)]
@@ -239,10 +267,9 @@ class HostFootprint():
 
             # Create dictionary with filename as key and a json of
             # role predictions for that file
-            all_predictions[y[counter]] = role_predictions
+            all_predictions[filename[counter]] = role_predictions
 
         return all_predictions
-
 
     def string_feature_check(self, X):
         """
@@ -266,7 +293,7 @@ class HostFootprint():
 
             # Check if the feature's data type is string
             # Object is the datatype pandas uses for storing strings
-            if X[col].dtype == "object":
+            if X[col].dtype == 'object':
 
                 # log warning if a string column is found
                 self.logger.info(f'String object found in column {col}')
@@ -282,7 +309,6 @@ class HostFootprint():
                 X = X.drop(col, axis=1)
 
         return X
-
 
     def main(self):
         """
@@ -315,6 +341,6 @@ class HostFootprint():
             return role_prediction
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     host_footprint = HostFootprint()
     host_footprint.main()
